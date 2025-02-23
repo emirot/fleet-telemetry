@@ -1,13 +1,14 @@
 package kinesis
 
 import (
-	"fmt"
+	"context"
+	"log"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics"
@@ -18,7 +19,7 @@ import (
 
 // Producer client to handle kinesis interactions
 type Producer struct {
-	kinesis            *kinesis.Kinesis
+	kinesis            *kinesis.Client
 	logger             *logrus.Logger
 	prometheusEnabled  bool
 	metricsCollector   metrics.MetricCollector
@@ -45,28 +46,15 @@ var (
 func NewProducer(maxRetries int, streams map[string]string, overrideHost string, prometheusEnabled bool, metricsCollector metrics.MetricCollector, airbrakeHandler *airbrake.Handler, ackChan chan (*telemetry.Record), reliableAckTxTypes map[string]interface{}, logger *logrus.Logger) (telemetry.Producer, error) {
 	registerMetricsOnce(metricsCollector)
 
-	config := &aws.Config{
-		MaxRetries:                    aws.Int(maxRetries),
-		CredentialsChainVerboseErrors: aws.Bool(true),
-	}
-	if overrideHost != "" {
-		config = config.WithEndpoint(overrideHost)
-	}
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Config:            *config,
-		SharedConfigState: session.SharedConfigEnable,
-	})
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRetryMaxAttempts(maxRetries), config.WithBaseEndpoint(overrideHost))
 	if err != nil {
-		return nil, err
+		log.Fatalf("unable to load SDK config, %v", err)
 	}
 
-	service := kinesis.New(sess, config)
-	if _, err := service.ListStreams(&kinesis.ListStreamsInput{Limit: aws.Int64(1)}); err != nil {
-		return nil, fmt.Errorf("failed to list streams (test connection): %v", err)
-	}
+	client := kinesis.NewFromConfig(cfg)
 
 	return &Producer{
-		kinesis:            service,
+		kinesis:            client,
 		logger:             logger,
 		prometheusEnabled:  prometheusEnabled,
 		metricsCollector:   metricsCollector,
@@ -91,7 +79,7 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 		PartitionKey: aws.String(entry.Vin),
 	}
 
-	kinesisRecordOutput, err := p.kinesis.PutRecord(kinesisRecord)
+	kinesisRecordOutput, err := p.kinesis.PutRecord(context.TODO(), kinesisRecord)
 	if err != nil {
 		p.ReportError("kinesis_err", err, nil)
 		metricsRegistry.errorCount.Inc(map[string]string{"record_type": entry.TxType})
