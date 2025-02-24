@@ -1,14 +1,19 @@
 package integration_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"log"
+	"net/http"
 	"strings"
+	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 )
 
 var (
@@ -20,31 +25,60 @@ var (
 )
 
 type TestKinesisConsumer struct {
-	kineses *kinesis.Kinesis
+	kineses *kinesis.Client
 }
 
 func NewTestKinesisConsumer(host string, streamNames []string) (*TestKinesisConsumer, error) {
-	creds := credentials.NewStaticCredentials(fakeAWSID, fakeAWSSecret, fakeAWSToken)
-	awsConfig := aws.NewConfig().WithEndpoint(host).WithCredentialsChainVerboseErrors(true).WithRegion(fakeAWSRegion).WithCredentials(creds)
-	sess, err := session.NewSessionWithOptions(session.Options{Config: *awsConfig})
+	provider := credentials.NewStaticCredentialsProvider(fakeAWSID, fakeAWSID, "")
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithBaseEndpoint("http://kinesis:4566"),
+		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		config.WithRegion(fakeAWSRegion),
+		config.WithCredentialsProvider(provider),
+	)
+
 	if err != nil {
-		return nil, err
+		log.Fatalf("unable to load SDK config, %v", err)
+	}
+	fmt.Println("host.", *cfg.BaseEndpoint)
+	//t := &TestKinesisConsumer{
+	//	kineses: kinesis.NewFromConfig(cfg),
+	//}
+	client := kinesis.NewFromConfig(cfg)
+	fmt.Println("NewTestKinesisConsumer", client)
+
+	//_, err = t.CreateStream(context.TODO(), &kinesis.CreateStreamInput{
+	//	StreamName: aws.String(streamName),
+	//	ShardCount: aws.Int32(1),
+	//})
+	_, err = client.CreateStream(context.TODO(), &kinesis.CreateStreamInput{
+		StreamName: aws.String("ssdasdsa"),
+		ShardCount: aws.Int32(1),
+	})
+
+	if err != nil {
+		// Ignore "ResourceInUseException" as the stream may already exist.
+		if _, ok := err.(*types.ResourceInUseException); !ok {
+			log.Fatalf("Failed to create stream: %v", err)
+		} else {
+			fmt.Println("Stream already exists.")
+		}
+	} else {
+		fmt.Println("Stream created.")
 	}
 
-	t := &TestKinesisConsumer{
-		kineses: kinesis.New(sess, awsConfig),
-	}
-	for _, streamName := range streamNames {
-		if err = t.createStreamIfNotExists(streamName); err != nil {
-			return nil, err
-		}
-	}
-	return t, nil
+	//for _, streamName := range streamNames {
+	//	if err = t.createStreamIfNotExists(streamName); err != nil {
+	//		return nil, err
+	//	}
+	//}
+	return nil, nil
 }
 
 func (t *TestKinesisConsumer) streamExists(streamName string) (bool, error) {
-	response, err := t.kineses.ListStreams(&kinesis.ListStreamsInput{
-		Limit: aws.Int64(100),
+	response, err := t.kineses.ListStreams(context.TODO(), &kinesis.ListStreamsInput{
+		Limit: aws.Int32(100),
 	})
 	if err != nil {
 		return false, err
@@ -54,7 +88,7 @@ func (t *TestKinesisConsumer) streamExists(streamName string) (bool, error) {
 	}
 
 	for _, streamNameResponse := range response.StreamNames {
-		if strings.EqualFold(*streamNameResponse, streamName) {
+		if strings.Contains(streamNameResponse, streamName) {
 			return true, nil
 		}
 	}
@@ -62,52 +96,52 @@ func (t *TestKinesisConsumer) streamExists(streamName string) (bool, error) {
 }
 
 func (t *TestKinesisConsumer) createStreamIfNotExists(streamName string) error {
-	ok, err := t.streamExists(streamName)
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
 
-	_, err = t.kineses.CreateStream(&kinesis.CreateStreamInput{
-		StreamName: aws.String(streamName),
-		ShardCount: aws.Int64(1),
-	})
+	_, err := t.kineses.CreateStream(context.TODO(), &kinesis.CreateStreamInput{
+		StreamName: aws.String("nonlan"),
+		ShardCount: aws.Int32(1)})
+
 	if err != nil {
-		return err
+		// Ignore "ResourceInUseException" as the stream may already exist.
+		if _, ok := err.(*types.ResourceInUseException); !ok {
+			log.Fatalf("Failed to create stream: %v", err)
+		} else {
+			fmt.Println("Stream already exists.")
+		}
+	} else {
+		fmt.Println("Stream created.")
 	}
 	return nil
 }
 
-func (t *TestKinesisConsumer) FetchFirstStreamMessage(topic string) (*kinesis.Record, error) {
+func (t *TestKinesisConsumer) FetchFirstStreamMessage(topic string) (types.Record, error) {
 	stream := aws.String(topic)
 	describeInput := &kinesis.DescribeStreamInput{
 		StreamName: stream,
 	}
 
-	describeOutput, err := t.kineses.DescribeStream(describeInput)
+	describeOutput, err := t.kineses.DescribeStream(context.TODO(), describeInput)
 	if err != nil {
-		return nil, err
+		return types.Record{}, err
 	}
 	kinesisStreamName := *describeOutput.StreamDescription.StreamName
 	if !strings.EqualFold(kinesisStreamName, topic) {
-		return nil, fmt.Errorf("stream name mismatch. Expected %s, Actual %s", kinesisStreamName, topic)
+		return types.Record{}, fmt.Errorf("stream name mismatch. Expected %s, Actual %s", kinesisStreamName, topic)
 	}
 	if len(describeOutput.StreamDescription.Shards) == 0 {
-		return nil, errors.New("empty shards")
+		return types.Record{}, errors.New("empty shards")
 	}
 
 	shardID := describeOutput.StreamDescription.Shards[0].ShardId
 	getIteratorInput := &kinesis.GetShardIteratorInput{
 		StreamName:        stream,
 		ShardId:           shardID,
-		ShardIteratorType: aws.String("TRIM_HORIZON"),
+		ShardIteratorType: types.ShardIteratorType("TRIM_HORIZON"),
 	}
 
-	getIteratorOutput, err := t.kineses.GetShardIterator(getIteratorInput)
+	getIteratorOutput, err := t.kineses.GetShardIterator(context.TODO(), getIteratorInput)
 	if err != nil {
-		return nil, err
+		return types.Record{}, err
 	}
 
 	shardIterator := getIteratorOutput.ShardIterator
@@ -115,13 +149,13 @@ func (t *TestKinesisConsumer) FetchFirstStreamMessage(topic string) (*kinesis.Re
 		ShardIterator: shardIterator,
 	}
 
-	getRecordsOutput, err := t.kineses.GetRecords(getRecordsInput)
+	getRecordsOutput, err := t.kineses.GetRecords(context.TODO(), getRecordsInput)
 	if err != nil {
-		return nil, err
+		return types.Record{}, err
 	}
 	records := getRecordsOutput.Records
 	if len(records) == 0 {
-		return nil, errors.New("empty records")
+		return types.Record{}, errors.New("empty records")
 	}
 
 	return records[0], nil

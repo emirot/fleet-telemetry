@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"io"
 	"net/http"
 	"os"
@@ -14,7 +15,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gorilla/websocket"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
@@ -35,7 +35,7 @@ const (
 	zmqAddr     = "tcp://app:5284"
 	mqttBroker  = "mqtt:1883"
 	mqttTopic   = "telemetry/device-1/v/VehicleName"
-	kinesisHost = "http://kinesis:4567"
+	kinesisHost = "http://localhost:4566"
 
 	kinesisStreamName             = "test_V"
 	kinesisConnectivityStreamName = "test_connectivity"
@@ -159,7 +159,7 @@ var _ = Describe("Test messages", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			var record *kinesis.Record
+			var record types.Record
 			Eventually(func() error {
 				record, err = kinesisConsumer.FetchFirstStreamMessage(kinesisStreamName)
 				return err
@@ -233,7 +233,7 @@ var _ = Describe("Test messages", Ordered, func() {
 
 		It("reads vehicle data from aws kinesis", func() {
 			var err error
-			var record *kinesis.Record
+			var record types.Record
 			Eventually(func() error {
 				record, err = kinesisConsumer.FetchFirstStreamMessage(kinesisConnectivityStreamName)
 				return err
